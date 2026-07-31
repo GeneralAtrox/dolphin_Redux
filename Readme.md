@@ -1,14 +1,46 @@
-# Dolphin - A GameCube and Wii Emulator
+# Dolphin Redux
 
 [Homepage](https://dolphin-emu.org/) | [Project Site](https://github.com/dolphin-emu/dolphin) | [Buildbot](https://dolphin.ci/) | [Forums](https://forums.dolphin-emu.org/) | [Wiki](https://wiki.dolphin-emu.org/) | [GitHub Wiki](https://github.com/dolphin-emu/dolphin/wiki) | [Issue Tracker](https://bugs.dolphin-emu.org/projects/emulator/issues) | [Coding Style](https://github.com/dolphin-emu/dolphin/blob/master/Contributing.md) | [Transifex Page](https://app.transifex.com/dolphinemu/dolphin-emu/dashboard/) | [Analytics](https://mon.dolphin-emu.org/)
 
-Dolphin is an emulator for running GameCube and Wii games on Windows,
-Linux, macOS, and recent Android devices. It's licensed under the terms
-of the GNU General Public License, version 2 or later (GPLv2+).
+Dolphin Redux is a personal fork of the Dolphin GameCube and Wii emulator. It retains Dolphin's
+normal emulation features and adds an embedded Lua debugger for data-backed game reverse
+engineering.
 
-This personal fork adds an embedded, scriptable Lua debugger for data-backed reverse engineering.
+The goal is to answer questions that screenshots and ordinary emulator logs cannot: which guest
+instruction changed a value, which fade value was active for a draw, what complete GX command and
+state produced it, which EFB/XFB resource received the result, and which pixels were ultimately
+presented.
+
+## What Dolphin Redux adds
+
+| Standard Dolphin | Dolphin Redux |
+| --- | --- |
+| Runs and visually debugs GameCube/Wii software | Exposes execution as ordered, machine-readable events |
+| Provides built-in debugger controls | Adds hot-loadable Lua 5.4 observer scripts and a live console |
+| Can inspect memory manually | Calls scripts on exact memory reads/writes with address, value, size, PC, and LR, including JIT execution |
+| Executes the GX command stream | Exports complete GX command/vertex payloads and canonical CP, BP, and XF draw state |
+| Renders through the selected graphics backend | Captures the effective Direct3D 11 shaders, constants, textures, samplers, framebuffer, and draw parameters |
+| Displays the final frame | Records GX draws, EFB/XFB copies, and presents in one ordered evidence stream; copy and present events share the guest-XFB resource identity and include a canonical pixel SHA-256 when readback is available |
+
+It also provides:
+
+- callbacks for instructions, frames, memory reads/writes, GX commands, GX draws, EFB copies,
+  effective pipelines, and presents;
+- pause, resume, instruction-step, frame-step, scripted breakpoints, script reload, and structured
+  output through a local named pipe;
+- read-only operation by default, with explicit mutation opt-in that marks the session as
+  non-authoritative research;
+- deterministic emulated timestamps and source ordinals so evidence from different emulator
+  subsystems can be joined without relying on host time or screenshots; and
+- Skies of Arcadia Legends title-state and fade-word snapshots at render checkpoints.
+
+When no Lua session is active, the added observation paths remain inactive. The named-pipe control
+surface currently targets Windows, and effective-pipeline capture currently targets Direct3D 11.
+
 See [Dolphin Redux Lua Debugger](docs/DolphinReduxLuaDebugger.md) for setup, commands, callbacks,
-and evidence boundaries.
+examples, and evidence boundaries.
+
+Dolphin is licensed under the GNU General Public License, version 2 or later (GPLv2+).
 
 Please read the [FAQ](https://dolphin-emu.org/docs/faq/) before using Dolphin.
 
