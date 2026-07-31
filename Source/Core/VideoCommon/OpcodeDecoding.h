@@ -104,6 +104,9 @@ public:
   // data[0] is opcode.
   virtual void OnUnknown(u8 opcode, const u8* data) = 0;
 
+  // Called immediately before a complete command has any effect.
+  virtual void OnCommandBegin(const u8*, u32) {}
+
   // Called on ANY command.  The first byte of data is the opcode.  Size will be at least 1.
   // This function is called after one of the above functions is called.
   virtual void OnCommand(const u8* data, u32 size) = 0;
@@ -137,6 +140,7 @@ static DOLPHIN_FORCE_INLINE u32 RunCommand(const u8* data, u32 available,
     u32 count = 1;
     while (count < available && static_cast<Opcode>(data[count]) == Opcode::GX_NOP)
       count++;
+    callback.OnCommandBegin(data, count);
     callback.OnNop(count);
     return count;
   }
@@ -149,6 +153,7 @@ static DOLPHIN_FORCE_INLINE u32 RunCommand(const u8* data, u32 available,
     const u8 cmd2 = data[1];
     const u32 value = Common::swap32(&data[2]);
 
+    callback.OnCommandBegin(data, 6);
     callback.OnCP(cmd2, value);
 
     return 6;
@@ -169,6 +174,7 @@ static DOLPHIN_FORCE_INLINE u32 RunCommand(const u8* data, u32 available,
     if (available < u32(5 + stream_size * 4))
       return 0;
 
+    callback.OnCommandBegin(data, 5 + stream_size * 4);
     callback.OnXF(base_address, stream_size, &data[5]);
 
     return 5 + stream_size * 4;
@@ -195,6 +201,7 @@ static DOLPHIN_FORCE_INLINE u32 RunCommand(const u8* data, u32 available,
     // GX_LOAD_INDX_D (56 = 8*7) . CPArray::XF_D (7+8 = 15)
     const auto ref_array = static_cast<CPArray>((static_cast<u8>(cmd) / 8) + 8);
 
+    callback.OnCommandBegin(data, 5);
     callback.OnIndexedLoad(ref_array, index, address, size);
     return 5;
   }
@@ -208,6 +215,7 @@ static DOLPHIN_FORCE_INLINE u32 RunCommand(const u8* data, u32 available,
     const u32 size = Common::swap32(&data[5]);
 
     // Force 32-byte alignment for both the address and the size.
+    callback.OnCommandBegin(data, 9);
     callback.OnDisplayList(address & ~31, size & ~31);
     return 9;
   }
@@ -220,6 +228,7 @@ static DOLPHIN_FORCE_INLINE u32 RunCommand(const u8* data, u32 available,
     const u8 cmd2 = data[1];
     const u32 value = Common::swap24(&data[2]);
 
+    callback.OnCommandBegin(data, 5);
     callback.OnBP(cmd2, value);
 
     return 5;
@@ -242,12 +251,14 @@ static DOLPHIN_FORCE_INLINE u32 RunCommand(const u8* data, u32 available,
       if (available < 3 + num_vertices * vertex_size)
         return 0;
 
+      callback.OnCommandBegin(data, 3 + num_vertices * vertex_size);
       callback.OnPrimitiveCommand(primitive, vat, vertex_size, num_vertices, &data[3]);
 
       return 3 + num_vertices * vertex_size;
     }
   }
 
+  callback.OnCommandBegin(data, 1);
   callback.OnUnknown(static_cast<u8>(cmd), data);
   return 1;
 }

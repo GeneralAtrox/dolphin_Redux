@@ -17,6 +17,7 @@
 #include <tuple>
 
 class AbstractTexture;
+class AbstractStagingTexture;
 struct SurfaceInfo;
 enum class DolphinKey;
 
@@ -115,6 +116,11 @@ private:
   bool FetchXFB(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height, u64 ticks);
 
   void ProcessFrameDumping(u64 ticks) const;
+  void ObserveLuaPresentation(u64 present_ordinal, u64 frame_number, bool duplicate_xfb);
+  bool CaptureSoALPresentedPixelHash(const AbstractTexture* texture,
+                                     const MathUtil::Rectangle<int>& source_rect,
+                                     std::array<u8, 32>* sha256, u32* width, u32* height,
+                                     u32* stride, u32* format);
 
   void OnBackBufferSizeChanged();
 
@@ -164,6 +170,7 @@ private:
 
   std::unique_ptr<VideoCommon::PostProcessing> m_post_processor;
   std::unique_ptr<VideoCommon::OnScreenUI> m_onscreen_ui;
+  std::unique_ptr<AbstractStagingTexture> m_soal_present_readback_texture;
 
   u64 m_frame_count = 0;
   u64 m_present_count = 0;

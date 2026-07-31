@@ -133,9 +133,17 @@ public:
   void EnableBreaking(bool enable);
   bool IsBreakingEnabled() const { return m_breaking_enabled; }
 
+  // Non-user-visible observers share the slow-memory and JIT invalidation contract with
+  // memchecks without manufacturing or shadowing a debugger breakpoint.
+  void SetExternalMemoryObserverRanges(std::vector<std::pair<u32, u32>> ranges);
+
   void Update();
   void Clear();
-  bool HasAny() const { return !m_mem_checks.empty() && m_breaking_enabled; }
+  bool HasAny() const
+  {
+    return (!m_mem_checks.empty() && m_breaking_enabled) ||
+           !m_external_memory_observer_ranges.empty();
+  }
 
   BitSet32 GetGPRsUsedInConditions() { return m_gprs_used_in_conditions; }
   BitSet32 GetFPRsUsedInConditions() { return m_fprs_used_in_conditions; }
@@ -145,10 +153,12 @@ private:
   bool UpdateRegistersUsedInConditions();
 
   TMemChecks m_mem_checks;
+  TMemChecks m_external_memory_observer_checks;
   Core::System& m_system;
   BitSet32 m_gprs_used_in_conditions;
   BitSet32 m_fprs_used_in_conditions;
   bool m_mem_breakpoints_set = false;
+  std::vector<std::pair<u32, u32>> m_external_memory_observer_ranges;
   bool m_breaking_enabled = true;
 };
 

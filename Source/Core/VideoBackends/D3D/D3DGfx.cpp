@@ -11,6 +11,7 @@
 #include <string>
 #include <strsafe.h>
 #include <tuple>
+#include <vector>
 
 #include "Common/Assert.h"
 #include "Common/CommonTypes.h"
@@ -18,6 +19,8 @@
 #include "Common/MathUtil.h"
 
 #include "Core/Core.h"
+#include "Core/SoAL/LuaDebuggerService.h"
+#include "Core/System.h"
 
 #include "VideoBackends/D3D/D3DBase.h"
 #include "VideoBackends/D3D/D3DBoundingBox.h"
@@ -28,12 +31,59 @@
 #include "VideoBackends/D3D/DXTexture.h"
 
 #include "VideoCommon/BPFunctions.h"
+#include "VideoCommon/AbstractFramebuffer.h"
 #include "VideoCommon/FramebufferManager.h"
 #include "VideoCommon/PostProcessing.h"
 #include "VideoCommon/Present.h"
 #include "VideoCommon/RenderState.h"
 #include "VideoCommon/VideoConfig.h"
+#include "VideoCommon/PixelShaderManager.h"
+#include "VideoCommon/VertexShaderManager.h"
 #include "VideoCommon/XFMemory.h"
+
+namespace
+{
+void AppendU32BE(std::vector<u8>* bytes, u32 value)
+{
+  bytes->push_back(static_cast<u8>(value >> 24));
+  bytes->push_back(static_cast<u8>(value >> 16));
+  bytes->push_back(static_cast<u8>(value >> 8));
+  bytes->push_back(static_cast<u8>(value));
+}
+
+void AppendU64BE(std::vector<u8>* bytes, u64 value)
+{
+  AppendU32BE(bytes, static_cast<u32>(value >> 32));
+  AppendU32BE(bytes, static_cast<u32>(value));
+}
+
+void AppendRaw(std::vector<u8>* bytes, const void* data, size_t size)
+{
+  if (size == 0)
+    return;
+  const auto* first = static_cast<const u8*>(data);
+  bytes->insert(bytes->end(), first, first + size);
+}
+
+void AppendShader(std::vector<u8>* bytes, const AbstractShader* abstract_shader)
+{
+  const auto* shader = static_cast<const DX11::DXShader*>(abstract_shader);
+  if (!shader)
+  {
+    AppendU32BE(bytes, 0);
+    AppendU32BE(bytes, 0);
+    AppendU32BE(bytes, 0);
+    return;
+  }
+  const std::string_view source = shader->GetSource();
+  const auto& binary = shader->GetByteCode();
+  AppendU32BE(bytes, 1);
+  AppendU32BE(bytes, static_cast<u32>(source.size()));
+  AppendU32BE(bytes, static_cast<u32>(binary.size()));
+  AppendRaw(bytes, source.data(), source.size());
+  AppendRaw(bytes, binary.data(), binary.size());
+}
+}  // namespace
 
 namespace DX11
 {
@@ -78,7 +128,7 @@ Gfx::CreateShaderFromSource(ShaderStage stage, std::string_view source,
   if (!bytecode)
     return nullptr;
 
-  return DXShader::CreateFromBytecode(stage, std::move(*bytecode), name);
+  return DXShader::CreateFromBytecode(stage, std::move(*bytecode), name, source);
 }
 
 std::unique_ptr<AbstractShader> Gfx::CreateShaderFromBinary(ShaderStage stage, const void* data,
@@ -97,6 +147,7 @@ std::unique_ptr<AbstractPipeline> Gfx::CreatePipeline(const AbstractPipelineConf
 void Gfx::SetPipeline(const AbstractPipeline* pipeline)
 {
   const DXPipeline* dx_pipeline = static_cast<const DXPipeline*>(pipeline);
+  m_soal_current_pipeline = dx_pipeline;
   if (m_current_pipeline == dx_pipeline)
     return;
 
@@ -141,12 +192,14 @@ void Gfx::SetViewport(float x, float y, float width, float height, float near_de
 void Gfx::Draw(u32 base_vertex, u32 num_vertices)
 {
   D3D::stateman->Apply();
+  EmitSoALEffectivePipeline(false, base_vertex, num_vertices, 0);
   D3D::context->Draw(num_vertices, base_vertex);
 }
 
 void Gfx::DrawIndexed(u32 base_index, u32 num_indices, u32 base_vertex)
 {
   D3D::stateman->Apply();
+  EmitSoALEffectivePipeline(true, base_index, num_indices, base_vertex);
   D3D::context->DrawIndexed(num_indices, base_index, base_vertex);
 }
 
@@ -232,13 +285,106 @@ void Gfx::SetAndClearFramebuffer(AbstractFramebuffer* framebuffer, const ClearCo
 
 void Gfx::SetTexture(u32 index, const AbstractTexture* texture)
 {
+  if (index < m_soal_texture_bindings.size())
+  {
+    SoALTextureBinding& binding = m_soal_texture_bindings[index];
+    binding = {};
+    if (texture)
+    {
+      const TextureConfig& config = texture->GetConfig();
+      binding = {.source = texture,
+                 .valid = true,
+                 .width = config.width,
+                 .height = config.height,
+                 .levels = config.levels,
+                 .layers = config.layers,
+                 .samples = config.samples,
+                 .format = static_cast<u32>(config.format),
+                 .flags = config.flags,
+                 .type = static_cast<u32>(config.type)};
+    }
+  }
   D3D::stateman->SetTexture(index, texture ? static_cast<const DXTexture*>(texture)->GetD3DSRV() :
                                              nullptr);
 }
 
 void Gfx::SetSamplerState(u32 index, const SamplerState& state)
 {
+  if (index < m_soal_sampler_states.size())
+    m_soal_sampler_states[index] = state;
   D3D::stateman->SetSampler(index, m_state_cache.Get(state));
+}
+
+void Gfx::EmitSoALEffectivePipeline(bool indexed, u32 draw_base, u32 draw_count, u32 base_vertex)
+{
+  SoAL::LuaDebuggerService& debugger = SoAL::LuaDebuggerService::Get();
+  if (!m_soal_current_pipeline || !debugger.WantsEffectivePipelineObservation())
+    return;
+  const AbstractPipelineConfig& config = m_soal_current_pipeline->m_config;
+  if (config.usage != AbstractPipelineUsage::GX && config.usage != AbstractPipelineUsage::GXUber)
+    return;
+  const u64 gx_draw_ordinal = debugger.LatestGXDrawOrdinal();
+  if (gx_draw_ordinal == 0)
+    return;
+
+  constexpr std::array<u8, 8> definition_magic = {'S', 'O', 'A', 'L', 'D', 'X', 'P', 'D'};
+  std::vector<u8> definition(definition_magic.begin(), definition_magic.end());
+  AppendU32BE(&definition, 1);
+  AppendU32BE(&definition, static_cast<u32>(D3D::feature_level));
+  AppendU32BE(&definition, static_cast<u32>(config.usage));
+  AppendU32BE(&definition, config.rasterization_state.hex);
+  AppendU32BE(&definition, config.depth_state.hex);
+  AppendU32BE(&definition, config.blending_state.hex);
+  AppendU32BE(&definition, config.framebuffer_state.hex);
+  AppendU32BE(&definition, g_ActiveConfig.bFastTextureSampling ? 1u : 0u);
+  AppendU32BE(&definition, g_ActiveConfig.UseVertexRounding() ? 1u : 0u);
+  AppendU32BE(&definition, static_cast<u32>(g_ActiveConfig.iEFBScale));
+  AppendU32BE(&definition, g_ActiveConfig.iMultisamples);
+  AppendShader(&definition, config.vertex_shader);
+  AppendShader(&definition, config.geometry_shader);
+  AppendShader(&definition, config.pixel_shader);
+
+  constexpr std::array<u8, 8> bindings_magic = {'S', 'O', 'A', 'L', 'D', 'X', 'P', 'B'};
+  std::vector<u8> bindings(bindings_magic.begin(), bindings_magic.end());
+  AppendU32BE(&bindings, 2);
+  for (const SamplerState& sampler : m_soal_sampler_states)
+    AppendU64BE(&bindings, sampler.Hex());
+  for (const SoALTextureBinding& texture : m_soal_texture_bindings)
+  {
+    AppendU32BE(&bindings, texture.valid ? 1u : 0u);
+    AppendU32BE(&bindings, texture.width);
+    AppendU32BE(&bindings, texture.height);
+    AppendU32BE(&bindings, texture.levels);
+    AppendU32BE(&bindings, texture.layers);
+    AppendU32BE(&bindings, texture.samples);
+    AppendU32BE(&bindings, texture.format);
+    AppendU32BE(&bindings, texture.flags);
+    AppendU32BE(&bindings, texture.type);
+  }
+  const AbstractFramebuffer* const framebuffer = GetCurrentFramebuffer();
+  AppendU32BE(&bindings, framebuffer ? 1u : 0u);
+  AppendU32BE(&bindings, framebuffer ? framebuffer->GetWidth() : 0u);
+  AppendU32BE(&bindings, framebuffer ? framebuffer->GetHeight() : 0u);
+  AppendU32BE(&bindings, framebuffer ? framebuffer->GetLayers() : 0u);
+  AppendU32BE(&bindings, framebuffer ? framebuffer->GetSamples() : 0u);
+  AppendU32BE(&bindings, framebuffer ? static_cast<u32>(framebuffer->GetColorFormat()) : 0u);
+  AppendU32BE(&bindings, framebuffer ? static_cast<u32>(framebuffer->GetDepthFormat()) : 0u);
+  Core::System& system = Core::System::GetInstance();
+  const VertexShaderConstants& vertex_constants = system.GetVertexShaderManager().constants;
+  const PixelShaderConstants& pixel_constants = system.GetPixelShaderManager().constants;
+  AppendU32BE(&bindings, sizeof(vertex_constants));
+  AppendRaw(&bindings, &vertex_constants, sizeof(vertex_constants));
+  AppendU32BE(&bindings, sizeof(pixel_constants));
+  AppendRaw(&bindings, &pixel_constants, sizeof(pixel_constants));
+
+  debugger.ObserveEffectivePipeline(
+      system, {.gx_draw_ordinal = gx_draw_ordinal,
+               .draw_kind = indexed ? 1u : 0u,
+               .draw_base = draw_base,
+               .draw_count = draw_count,
+               .base_vertex = base_vertex,
+               .definition = std::move(definition),
+               .bindings = std::move(bindings)});
 }
 
 void Gfx::SetComputeImageTexture(u32 index, AbstractTexture* texture, bool read, bool write)
@@ -249,6 +395,11 @@ void Gfx::SetComputeImageTexture(u32 index, AbstractTexture* texture, bool read,
 
 void Gfx::UnbindTexture(const AbstractTexture* texture)
 {
+  for (SoALTextureBinding& binding : m_soal_texture_bindings)
+  {
+    if (binding.source == texture)
+      binding = {};
+  }
   if (D3D::stateman->UnsetTexture(static_cast<const DXTexture*>(texture)->GetD3DSRV()) != 0)
     D3D::stateman->ApplyTextures();
 }

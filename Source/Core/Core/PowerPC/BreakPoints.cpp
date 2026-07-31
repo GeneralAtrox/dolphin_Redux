@@ -332,6 +332,42 @@ void MemChecks::EnableBreaking(bool enabled)
   Update();
 }
 
+void MemChecks::SetExternalMemoryObserverRanges(std::vector<std::pair<u32, u32>> ranges)
+{
+  TMemChecks checks;
+  checks.reserve(ranges.size());
+  for (const auto& [first, last] : ranges)
+  {
+    checks.push_back({.start_address = first,
+                      .end_address = last,
+                      .is_ranged = first != last,
+                      .is_break_on_read = true,
+                      .is_break_on_write = true});
+  }
+
+  std::vector<std::pair<u32, u32>> mapping_ranges;
+  for (const auto& [first, last] : ranges)
+  {
+    const u32 page_first = first & ~(PowerPC::BAT_PAGE_SIZE - 1);
+    const u32 page_last = last | (PowerPC::BAT_PAGE_SIZE - 1);
+    if (!mapping_ranges.empty() &&
+        static_cast<u64>(page_first) <=
+            static_cast<u64>(mapping_ranges.back().second) + 1 + PowerPC::BAT_PAGE_SIZE)
+      mapping_ranges.back().second = std::max(mapping_ranges.back().second, page_last);
+    else
+      mapping_ranges.emplace_back(page_first, page_last);
+  }
+  if (m_external_memory_observer_ranges == mapping_ranges &&
+      m_external_memory_observer_checks.size() == checks.size() &&
+      std::ranges::equal(m_external_memory_observer_checks, checks, [](const auto& a, const auto& b) {
+        return a.start_address == b.start_address && a.end_address == b.end_address;
+      }))
+    return;
+  m_external_memory_observer_ranges = std::move(mapping_ranges);
+  m_external_memory_observer_checks = std::move(checks);
+  Update();
+}
+
 DelayedMemCheckUpdate MemChecks::Remove(u32 address)
 {
   const auto iter = std::ranges::find(m_mem_checks, address, &TMemCheck::start_address);
@@ -394,15 +430,15 @@ bool MemChecks::UpdateRegistersUsedInConditions()
 
 TMemCheck* MemChecks::GetMemCheck(u32 address, size_t size)
 {
-  const auto iter = std::ranges::find_if(m_mem_checks, [address, size](const auto& mc) {
+  const auto matches = [address, size](const auto& mc) {
     return mc.end_address >= address && address + size - 1 >= mc.start_address;
-  });
+  };
+  const auto iter = std::ranges::find_if(m_mem_checks, matches);
+  if (iter != m_mem_checks.cend())
+    return &*iter;
 
-  // None found
-  if (iter == m_mem_checks.cend())
-    return nullptr;
-
-  return &*iter;
+  const auto external = std::ranges::find_if(m_external_memory_observer_checks, matches);
+  return external == m_external_memory_observer_checks.cend() ? nullptr : &*external;
 }
 
 bool MemChecks::OverlapsMemcheck(u32 address, u32 length) const
@@ -412,6 +448,14 @@ bool MemChecks::OverlapsMemcheck(u32 address, u32 length) const
 
   const u32 page_end_suffix = length - 1;
   const u32 page_end_address = address | page_end_suffix;
+
+  if (std::ranges::any_of(m_external_memory_observer_ranges, [&](const auto& range) {
+        return ((range.first | page_end_suffix) == page_end_address ||
+                (range.second | page_end_suffix) == page_end_address) ||
+               ((range.first | page_end_suffix) < page_end_address &&
+                (range.second | page_end_suffix) > page_end_address);
+      }))
+    return true;
 
   return std::ranges::any_of(m_mem_checks, [&](const auto& mc) {
     return ((mc.start_address | page_end_suffix) == page_end_address ||

@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <d3d11_4.h>
 #include <string_view>
 
@@ -16,6 +17,7 @@ namespace DX11
 class SwapChain;
 class DXTexture;
 class DXFramebuffer;
+class DXPipeline;
 
 class Gfx final : public ::AbstractGfx
 {
@@ -77,8 +79,26 @@ public:
 
 private:
   void CheckForSwapChainChanges();
+  void EmitSoALEffectivePipeline(bool indexed, u32 draw_base, u32 draw_count, u32 base_vertex);
+
+  struct SoALTextureBinding
+  {
+    const AbstractTexture* source = nullptr;
+    bool valid = false;
+    u32 width = 0;
+    u32 height = 0;
+    u32 levels = 0;
+    u32 layers = 0;
+    u32 samples = 0;
+    u32 format = 0;
+    u32 flags = 0;
+    u32 type = 0;
+  };
 
   StateCache m_state_cache;
+  const DXPipeline* m_soal_current_pipeline = nullptr;
+  std::array<SamplerState, 8> m_soal_sampler_states{};
+  std::array<SoALTextureBinding, 8> m_soal_texture_bindings{};
 
   float m_backbuffer_scale;
   std::unique_ptr<SwapChain> m_swap_chain;

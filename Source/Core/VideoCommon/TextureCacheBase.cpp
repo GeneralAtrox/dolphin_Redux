@@ -4,6 +4,7 @@
 #include "VideoCommon/TextureCacheBase.h"
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -32,6 +33,7 @@
 #include "Core/FifoPlayer/FifoPlayer.h"
 #include "Core/FifoPlayer/FifoRecorder.h"
 #include "Core/HW/Memmap.h"
+#include "Core/SoAL/LuaDebuggerService.h"
 #include "Core/System.h"
 
 #include "VideoCommon/AbstractFramebuffer.h"
@@ -2213,6 +2215,26 @@ void TextureCacheBase::CopyRenderTargetToTexture(
     scaled_tex_h /= 2;
   }
 
+  SoAL::LuaDebuggerEfbCopyInfo lua_copy_info{
+      .destination_address = dstAddr,
+      .destination_stride = dstStride,
+      .copy_width = tex_w,
+      .copy_height = tex_h,
+      .source_left = static_cast<u32>(srcRect.left),
+      .source_top = static_cast<u32>(srcRect.top),
+      .source_right = static_cast<u32>(srcRect.right),
+      .source_bottom = static_cast<u32>(srcRect.bottom),
+      .vram_filter_coefficients = GetVRAMCopyFilterCoefficients(filter_coefficients),
+      .gamma_bits = std::bit_cast<u32>(gamma),
+      .y_scale_bits = std::bit_cast<u32>(y_scale),
+      .copy_parameter_flags = (scaleByHalf ? 1u : 0u) | (clamp_top ? 4u : 0u) |
+                              (clamp_bottom ? 8u : 0u) | (isIntensity ? 16u : 0u),
+      .copy_to_vram = copy_to_vram,
+      .copy_to_ram = copy_to_ram,
+      .copy_to_xfb = is_xfb_copy,
+      .depth_copy = is_depth_copy,
+  };
+
   if (!is_xfb_copy && !g_ActiveConfig.bCopyEFBScaled)
   {
     // No upscaling
@@ -2509,8 +2531,13 @@ void TextureCacheBase::CopyRenderTargetToTexture(
   {
     const u64 hash = entry->CalculateHash();
     entry->SetHashes(hash, hash);
+    lua_copy_info.resource_id = entry->id;
+    lua_copy_info.resource_hash = entry->hash;
+    lua_copy_info.resource_base_hash = entry->base_hash;
+    lua_copy_info.resource_content_ordinal = entry->content_semaphore;
     m_textures_by_address.emplace(dstAddr, std::move(entry));
   }
+  SoAL::LuaDebuggerService::Get().ObserveEFBCopy(system, lua_copy_info);
 }
 
 void TextureCacheBase::FlushEFBCopies()

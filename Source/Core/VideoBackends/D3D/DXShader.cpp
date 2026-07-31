@@ -10,8 +10,9 @@
 namespace DX11
 {
 DXShader::DXShader(ShaderStage stage, BinaryData bytecode, ID3D11DeviceChild* shader,
-                   std::string_view name)
-    : D3DCommon::Shader(stage, std::move(bytecode)), m_shader(shader), m_name(name)
+                   std::string_view name, std::string_view source)
+    : D3DCommon::Shader(stage, std::move(bytecode)), m_shader(shader), m_name(name),
+      m_source(source)
 {
   if (!m_name.empty())
   {
@@ -47,7 +48,8 @@ ID3D11ComputeShader* DXShader::GetD3DComputeShader() const
 }
 
 std::unique_ptr<DXShader> DXShader::CreateFromBytecode(ShaderStage stage, BinaryData bytecode,
-                                                       std::string_view name)
+                                                       std::string_view name,
+                                                       std::string_view source)
 {
   switch (stage)
   {
@@ -59,7 +61,8 @@ std::unique_ptr<DXShader> DXShader::CreateFromBytecode(ShaderStage stage, Binary
     if (FAILED(hr))
       return nullptr;
 
-    return std::make_unique<DXShader>(ShaderStage::Vertex, std::move(bytecode), vs.Get(), name);
+    return std::make_unique<DXShader>(ShaderStage::Vertex, std::move(bytecode), vs.Get(), name,
+                                      source);
   }
 
   case ShaderStage::Geometry:
@@ -70,7 +73,8 @@ std::unique_ptr<DXShader> DXShader::CreateFromBytecode(ShaderStage stage, Binary
     if (FAILED(hr))
       return nullptr;
 
-    return std::make_unique<DXShader>(ShaderStage::Geometry, std::move(bytecode), gs.Get(), name);
+    return std::make_unique<DXShader>(ShaderStage::Geometry, std::move(bytecode), gs.Get(), name,
+                                      source);
   }
   break;
 
@@ -82,7 +86,8 @@ std::unique_ptr<DXShader> DXShader::CreateFromBytecode(ShaderStage stage, Binary
     if (FAILED(hr))
       return nullptr;
 
-    return std::make_unique<DXShader>(ShaderStage::Pixel, std::move(bytecode), ps.Get(), name);
+    return std::make_unique<DXShader>(ShaderStage::Pixel, std::move(bytecode), ps.Get(), name,
+                                      source);
   }
   break;
 
@@ -94,7 +99,8 @@ std::unique_ptr<DXShader> DXShader::CreateFromBytecode(ShaderStage stage, Binary
     if (FAILED(hr))
       return nullptr;
 
-    return std::make_unique<DXShader>(ShaderStage::Compute, std::move(bytecode), cs.Get(), name);
+    return std::make_unique<DXShader>(ShaderStage::Compute, std::move(bytecode), cs.Get(), name,
+                                      source);
   }
   break;
 

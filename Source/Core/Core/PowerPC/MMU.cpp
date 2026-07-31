@@ -43,6 +43,7 @@
 #include "Common/ChunkFile.h"
 #include "Common/CommonTypes.h"
 #include "Common/Logging/Log.h"
+#include "Core/SoAL/LuaDebuggerService.h"
 
 #include "Core/Core.h"
 #include "Core/HW/CPU.h"
@@ -601,6 +602,10 @@ std::optional<ReadResult<u32>> MMU::HostTryReadInstruction(const Core::CPUThread
 
 void MMU::Memcheck(u32 address, u64 var, bool write, size_t size)
 {
+  auto& lua_debugger = SoAL::LuaDebuggerService::Get();
+  if (lua_debugger.WantsMemoryHooks())
+    lua_debugger.ObserveMemory(m_system, address, var, static_cast<u32>(size), m_ppc_state.pc,
+                               LR(m_ppc_state), write);
   if (!m_power_pc.GetMemChecks().HasAny())
     return;
 

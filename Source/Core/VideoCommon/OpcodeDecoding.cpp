@@ -14,10 +14,14 @@
 
 #include "VideoCommon/OpcodeDecoding.h"
 
+#include <array>
+#include <vector>
+
 #include "Common/Assert.h"
 #include "Common/Logging/Log.h"
 #include "Core/FifoPlayer/FifoRecorder.h"
 #include "Core/HW/Memmap.h"
+#include "Core/SoAL/LuaDebuggerService.h"
 #include "Core/System.h"
 #include "VideoCommon/BPMemory.h"
 #include "VideoCommon/CPMemory.h"
@@ -33,6 +37,42 @@
 namespace OpcodeDecoder
 {
 bool g_record_fifo_data = false;
+
+namespace
+{
+void AppendU32BE(std::vector<u8>* bytes, u32 value)
+{
+  bytes->push_back(static_cast<u8>(value >> 24));
+  bytes->push_back(static_cast<u8>(value >> 16));
+  bytes->push_back(static_cast<u8>(value >> 8));
+  bytes->push_back(static_cast<u8>(value));
+}
+
+std::vector<u8> CaptureActiveGXState()
+{
+  static_assert(sizeof(BPMemory) == 256 * sizeof(u32));
+  std::array<u32, 256> cp_words{};
+  g_main_cp_state.FillCPMemoryArray(cp_words.data());
+  constexpr std::array<u8, 8> magic = {'S', 'O', 'A', 'L', 'G', 'X', 'S', 'T'};
+  constexpr u32 xf_word_count = 88;
+  std::vector<u8> bytes;
+  bytes.reserve(magic.size() + 4 * (4 + cp_words.size() + 256 + xf_word_count));
+  bytes.insert(bytes.end(), magic.begin(), magic.end());
+  AppendU32BE(&bytes, 1);
+  AppendU32BE(&bytes, static_cast<u32>(cp_words.size()));
+  AppendU32BE(&bytes, 256);
+  AppendU32BE(&bytes, xf_word_count);
+  for (const u32 word : cp_words)
+    AppendU32BE(&bytes, word);
+  const u32* const bp_words = reinterpret_cast<const u32*>(&bpmem);
+  for (u32 index = 0; index < 256; ++index)
+    AppendU32BE(&bytes, bp_words[index]);
+  const u32* const xf_words = reinterpret_cast<const u32*>(&xfmem) + 0x1000;
+  for (u32 index = 0; index < xf_word_count; ++index)
+    AppendU32BE(&bytes, xf_words[index]);
+  return bytes;
+}
+}  // namespace
 
 template <bool is_preprocess>
 class RunCallback final : public Callback
@@ -126,6 +166,18 @@ public:
   OPCODE_CALLBACK(void OnPrimitiveCommand(OpcodeDecoder::Primitive primitive, u8 vat,
                                           u32 vertex_size, u16 num_vertices, const u8* vertex_data))
   {
+    if constexpr (!is_preprocess)
+    {
+      if (m_current_gx_command_ordinal != 0 && m_current_command_data &&
+          m_current_command_size >= 3)
+      {
+        const std::vector<u8> state = CaptureActiveGXState();
+        SoAL::LuaDebuggerService::Get().ObserveGXDraw(
+            Core::System::GetInstance(), m_current_gx_command_ordinal,
+            {m_current_command_data, m_current_command_size}, static_cast<u32>(primitive), vat,
+            vertex_size, num_vertices, state);
+      }
+    }
     // load vertices
     const u32 size = vertex_size * num_vertices;
 
@@ -224,6 +276,27 @@ public:
     }
   }
 
+  OPCODE_CALLBACK(void OnCommandBegin(const u8* data, u32 size))
+  {
+    if constexpr (!is_preprocess)
+    {
+      auto& system = Core::System::GetInstance();
+      m_current_command_data = data;
+      m_current_command_size = size;
+      m_current_gx_command_ordinal = 0;
+      if (static_cast<Opcode>(data[0]) == Opcode::GX_NOP && size > 1)
+      {
+        for (u32 index = 0; index < size; ++index)
+          SoAL::LuaDebuggerService::Get().ObserveGXCommand(system, {data + index, 1});
+      }
+      else
+      {
+        m_current_gx_command_ordinal =
+            SoAL::LuaDebuggerService::Get().ObserveGXCommand(system, {data, size});
+      }
+    }
+  }
+
   OPCODE_CALLBACK(void OnCommand(const u8* data, u32 size))
   {
     ASSERT(size >= 1);
@@ -254,6 +327,9 @@ public:
 
   u32 m_cycles = 0;
   bool m_in_display_list = false;
+  const u8* m_current_command_data = nullptr;
+  u32 m_current_command_size = 0;
+  u64 m_current_gx_command_ordinal = 0;
 };
 
 template <bool is_preprocess>

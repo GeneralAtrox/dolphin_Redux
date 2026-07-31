@@ -69,6 +69,8 @@
 #include "Core/PowerPC/GDBStub.h"
 #include "Core/PowerPC/JitInterface.h"
 #include "Core/PowerPC/PowerPC.h"
+#include "Core/SoAL/LuaDebuggerPipeServer.h"
+#include "Core/SoAL/LuaDebuggerService.h"
 #include "Core/State.h"
 #include "Core/System.h"
 #include "Core/WiiRoot.h"
@@ -150,6 +152,7 @@ void FrameUpdateOnCPUThread()
 
 void OnFrameEnd(Core::System& system)
 {
+  SoAL::LuaDebuggerService::Get().ObserveFrame(system);
 #ifdef USE_MEMORYWATCHER
   if (s_memory_watcher)
   {
@@ -607,6 +610,9 @@ static void EmuThread(Core::System& system, std::unique_ptr<BootParameters> boot
     PanicAlertFmt("Failed to initialize video backend!");
     return;
   }
+
+  SoAL::LuaDebuggerPipeServer::Get().Start();
+  Common::ScopeGuard lua_debugger_guard{[] { SoAL::LuaDebuggerPipeServer::Get().Stop(); }};
 
   if (cpu_info.HTT)
     Config::SetBaseOrCurrent(Config::MAIN_DSP_THREAD, cpu_info.num_cores > 4);

@@ -16,20 +16,23 @@ class DXShader final : public D3DCommon::Shader
 {
 public:
   DXShader(ShaderStage stage, BinaryData bytecode, ID3D11DeviceChild* shader,
-           std::string_view name);
+           std::string_view name, std::string_view source);
   ~DXShader() override;
 
   ID3D11VertexShader* GetD3DVertexShader() const;
   ID3D11GeometryShader* GetD3DGeometryShader() const;
   ID3D11PixelShader* GetD3DPixelShader() const;
   ID3D11ComputeShader* GetD3DComputeShader() const;
+  std::string_view GetSource() const { return m_source; }
 
   static std::unique_ptr<DXShader> CreateFromBytecode(ShaderStage stage, BinaryData bytecode,
-                                                      std::string_view name);
+                                                      std::string_view name,
+                                                      std::string_view source = {});
 
 private:
   ComPtr<ID3D11DeviceChild> m_shader;
   std::string m_name;
+  std::string m_source;
 };
 
 }  // namespace DX11

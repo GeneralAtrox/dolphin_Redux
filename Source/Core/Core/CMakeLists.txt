@@ -57,6 +57,20 @@ add_library(core
   ConfigManager.h
   Core.cpp
   Core.h
+  SoAL/LuaDebuggerController.cpp
+  SoAL/LuaDebuggerController.h
+  SoAL/LuaDebuggerEvents.cpp
+  SoAL/LuaDebuggerEvents.h
+  SoAL/LuaDebuggerPipeServer.cpp
+  SoAL/LuaDebuggerPipeServer.h
+  SoAL/LuaDebuggerRuntime.cpp
+  SoAL/LuaDebuggerRuntime.h
+  SoAL/LuaDebuggerService.cpp
+  SoAL/LuaDebuggerService.h
+  SoAL/LuaDebuggerSession.cpp
+  SoAL/LuaDebuggerSession.h
+  SoAL/LuaDebuggerSha256.cpp
+  SoAL/LuaDebuggerSha256.h
   CoreTiming.cpp
   CoreTiming.h
   CPUThreadConfigCallback.cpp

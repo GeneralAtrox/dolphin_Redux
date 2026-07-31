@@ -3,18 +3,24 @@
 
 #include "VideoCommon/Present.h"
 
+#include <cstring>
+#include <vector>
+
 #include "Common/ChunkFile.h"
 #include "Core/Config/GraphicsSettings.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/CoreTiming.h"
 #include "Core/HW/VideoInterface.h"
 #include "Core/Host.h"
+#include "Core/SoAL/LuaDebuggerService.h"
+#include "Core/SoAL/LuaDebuggerSha256.h"
 #include "Core/System.h"
 
 #include "InputCommon/ControllerInterface/ControllerInterface.h"
 
 #include "Present.h"
 #include "VideoCommon/AbstractGfx.h"
+#include "VideoCommon/AbstractStagingTexture.h"
 #include "VideoCommon/FrameDumper.h"
 #include "VideoCommon/FramebufferManager.h"
 #include "VideoCommon/OnScreenUI.h"
@@ -215,6 +221,7 @@ void Presenter::ViSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_height,
   if (!is_duplicate || !g_ActiveConfig.bSkipPresentingDuplicateXFBs)
   {
     Present(&present_info);
+    ObserveLuaPresentation(present_info.present_count, present_info.frame_count, is_duplicate);
     ProcessFrameDumping(ticks);
 
     video_events.after_present_event.Trigger(present_info);
@@ -248,6 +255,7 @@ void Presenter::ImmediateSwap(u32 xfb_addr, u32 fb_width, u32 fb_stride, u32 fb_
   video_events.before_present_event.Trigger(present_info);
 
   Present(&present_info);
+  ObserveLuaPresentation(present_info.present_count, present_info.frame_count, false);
   ProcessFrameDumping(ticks);
 
   video_events.after_present_event.Trigger(present_info);
@@ -257,6 +265,105 @@ void Presenter::SetNextSwapEstimatedTime(u64 ticks, TimePoint host_time)
 {
   m_next_swap_estimated_ticks = ticks;
   m_next_swap_estimated_time = host_time;
+}
+
+bool Presenter::CaptureSoALPresentedPixelHash(const AbstractTexture* texture,
+                                              const MathUtil::Rectangle<int>& source_rect,
+                                              std::array<u8, 32>* sha256, u32* width, u32* height,
+                                              u32* stride, u32* format)
+{
+  if (!texture || !sha256 || !width || !height || !stride || !format ||
+      source_rect.left < 0 || source_rect.top < 0 || source_rect.GetWidth() <= 0 ||
+      source_rect.GetHeight() <= 0 || source_rect.right > static_cast<int>(texture->GetWidth()) ||
+      source_rect.bottom > static_cast<int>(texture->GetHeight()))
+  {
+    return false;
+  }
+
+  const AbstractTextureFormat source_format = texture->GetFormat();
+  if (source_format != AbstractTextureFormat::RGBA8 &&
+      source_format != AbstractTextureFormat::BGRA8)
+  {
+    return false;
+  }
+  const u32 pixel_width = static_cast<u32>(source_rect.GetWidth());
+  const u32 pixel_height = static_cast<u32>(source_rect.GetHeight());
+  if (!m_soal_present_readback_texture ||
+      m_soal_present_readback_texture->GetWidth() != pixel_width ||
+      m_soal_present_readback_texture->GetHeight() != pixel_height ||
+      m_soal_present_readback_texture->GetFormat() != source_format)
+  {
+    m_soal_present_readback_texture = g_gfx->CreateStagingTexture(
+        StagingTextureType::Readback,
+        TextureConfig(pixel_width, pixel_height, 1, 1, 1, source_format, 0,
+                      AbstractTextureType::Texture_2DArray));
+    if (!m_soal_present_readback_texture)
+      return false;
+  }
+
+  const MathUtil::Rectangle<int> destination_rect(0, 0, static_cast<int>(pixel_width),
+                                                   static_cast<int>(pixel_height));
+  m_soal_present_readback_texture->CopyFromTexture(texture, source_rect, 0, 0, destination_rect);
+  m_soal_present_readback_texture->Flush();
+  if (!m_soal_present_readback_texture->Map())
+    return false;
+
+  constexpr u32 pixel_size = 4;
+  const u32 canonical_stride = pixel_width * pixel_size;
+  std::vector<u8> canonical_pixels(static_cast<size_t>(canonical_stride) * pixel_height);
+  const auto* mapped =
+      reinterpret_cast<const u8*>(m_soal_present_readback_texture->GetMappedPointer());
+  const size_t mapped_stride = m_soal_present_readback_texture->GetMappedStride();
+  for (u32 y = 0; y < pixel_height; ++y)
+  {
+    const u8* source = mapped + static_cast<size_t>(y) * mapped_stride;
+    u8* destination = canonical_pixels.data() + static_cast<size_t>(y) * canonical_stride;
+    if (source_format == AbstractTextureFormat::RGBA8)
+    {
+      std::memcpy(destination, source, canonical_stride);
+    }
+    else
+    {
+      for (u32 x = 0; x < pixel_width; ++x)
+      {
+        destination[x * 4] = source[x * 4 + 2];
+        destination[x * 4 + 1] = source[x * 4 + 1];
+        destination[x * 4 + 2] = source[x * 4];
+        destination[x * 4 + 3] = source[x * 4 + 3];
+      }
+    }
+  }
+  m_soal_present_readback_texture->Unmap();
+
+  *sha256 = SoAL::Sha256(canonical_pixels);
+  *width = pixel_width;
+  *height = pixel_height;
+  *stride = canonical_stride;
+  *format = static_cast<u32>(AbstractTextureFormat::RGBA8);
+  return true;
+}
+
+void Presenter::ObserveLuaPresentation(u64 present_ordinal, u64 frame_number, bool duplicate_xfb)
+{
+  auto& debugger = SoAL::LuaDebuggerService::Get();
+  if (!debugger.IsActive())
+    return;
+  std::array<u8, 32> pixel_sha256{};
+  u32 pixel_width = 0;
+  u32 pixel_height = 0;
+  u32 pixel_stride = 0;
+  u32 pixel_format = 0;
+  const bool pixel_valid = debugger.WantsPresentObservation() && m_xfb_entry &&
+                           CaptureSoALPresentedPixelHash(
+                               m_xfb_entry->texture.get(), m_xfb_rect, &pixel_sha256,
+                               &pixel_width, &pixel_height, &pixel_stride, &pixel_format);
+  debugger.ObservePresent(
+      Core::System::GetInstance(), present_ordinal, frame_number, m_last_xfb_addr,
+      m_last_xfb_width, m_last_xfb_stride, m_last_xfb_height,
+      m_xfb_entry ? m_xfb_entry->id : 0, m_xfb_entry ? m_xfb_entry->hash : 0,
+      m_xfb_entry ? m_xfb_entry->base_hash : 0,
+      m_xfb_entry ? m_xfb_entry->content_semaphore : 0, duplicate_xfb, "guest_xfb",
+      pixel_valid, pixel_sha256, pixel_width, pixel_height, pixel_stride, pixel_format);
 }
 
 void Presenter::ProcessFrameDumping(u64 ticks) const

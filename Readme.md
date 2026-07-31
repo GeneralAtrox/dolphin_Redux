@@ -6,6 +6,10 @@ Dolphin is an emulator for running GameCube and Wii games on Windows,
 Linux, macOS, and recent Android devices. It's licensed under the terms
 of the GNU General Public License, version 2 or later (GPLv2+).
 
+This personal fork adds an embedded, scriptable Lua debugger for data-backed reverse engineering.
+See [Dolphin Redux Lua Debugger](docs/DolphinReduxLuaDebugger.md) for setup, commands, callbacks,
+and evidence boundaries.
+
 Please read the [FAQ](https://dolphin-emu.org/docs/faq/) before using Dolphin.
 
 ## System Requirements

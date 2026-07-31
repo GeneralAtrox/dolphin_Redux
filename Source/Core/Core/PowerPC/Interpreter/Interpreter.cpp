@@ -22,6 +22,7 @@
 #include "Core/PowerPC/MMU.h"
 #include "Core/PowerPC/PPCTables.h"
 #include "Core/PowerPC/PowerPC.h"
+#include "Core/SoAL/LuaDebuggerService.h"
 #include "Core/System.h"
 
 namespace
@@ -117,6 +118,7 @@ bool Interpreter::HandleFunctionHooking(u32 address)
 
 int Interpreter::SingleStepInner()
 {
+  SoAL::LuaDebuggerService::Get().ObserveInstruction(m_system, m_ppc_state.pc);
   if (HandleFunctionHooking(m_ppc_state.pc))
   {
     UpdatePC();
