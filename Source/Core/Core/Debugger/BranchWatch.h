@@ -40,6 +40,16 @@ struct BranchWatchCollectionValue
   std::size_t total_hits = 0;
   std::size_t hits_snapshot = 0;
 };
+
+struct BranchWatchSnapshotEntry
+{
+  u32 origin_addr = 0;
+  u32 destin_addr = 0;
+  u32 original_inst = 0;
+  std::size_t total_hits = 0;
+  bool is_virtual = false;
+  bool condition = false;
+};
 }  // namespace Core
 
 template <>
@@ -129,6 +139,8 @@ public:
     system.GetJitInterface().ClearCache(guard);
   }
   void Clear(const CPUThreadGuard& guard);
+
+  std::vector<BranchWatchSnapshotEntry> Snapshot(const CPUThreadGuard& guard) const;
 
   void Save(const CPUThreadGuard& guard, std::FILE* file) const;
   void Load(const CPUThreadGuard& guard, std::FILE* file);

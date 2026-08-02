@@ -34,6 +34,8 @@ The client supports:
 - `lua pause`, `lua resume`, `lua step instruction`, `lua step frame`
 - `lua breakpoint add <hex>`, `remove <hex>`, `list`, and `clear`
 - `lua mutation enable <acknowledgement>`
+- `jit profile reset`, `jit profile snapshot`
+- `branch profile reset`, `branch profile snapshot`, `branch profile stop`
 
 Mutation is disabled by default. Enabling it marks the session as non-authoritative research mode.
 The client can also bind a request to the exact server process identity using its
@@ -65,6 +67,36 @@ The examples in `Tools/examples/lua-debugger-*.lua` show bounded CPU, memory, GX
 observers. Instruction callbacks require the interpreter or explicit pause/single-step operation;
 memory callbacks work in both the interpreter and JIT paths.
 
+## Executed-code cataloguing
+
+Enable `Dolphin.Debug.JitEnableProfiling=True` before boot to collect JIT execution counts. A bounded
+scene can then wipe the counters at its boundary and export only blocks that actually ran:
+
+```powershell
+.\Tools\soal-cli.ps1 jit profile reset
+.\Tools\soal-cli.ps1 jit profile snapshot
+```
+
+The snapshot includes every compiled instruction address, its original PowerPC bytes and a SHA-256
+identity. It therefore fails visibly when the runtime bytes cannot be joined to the static program
+rather than treating address overlap as proof.
+
+Enable `Dolphin.Interface.DebugModeEnabled=True` before boot for dynamic branch evidence. The branch
+profile records exact source, destination, instruction word, taken state and hit count:
+
+```powershell
+.\Tools\soal-cli.ps1 branch profile reset
+.\Tools\soal-cli.ps1 branch profile snapshot
+.\Tools\soal-cli.ps1 branch profile stop
+```
+
+`Tools/LuaDebugger/Join-JitProfileToGhidra.ps1` and
+`Tools/LuaDebugger/Join-BranchProfileToGhidra.ps1` validate these snapshots against the JSONL catalog
+produced by `Tools/LuaDebugger/ExportFunctionCatalog.java`. The exporter accepts optional minimum
+and maximum PowerPC addresses when a program contains multiple address spaces. The first join proves executed instruction
+membership; the second proves function entries, calls and other dynamic edges. Unresolved and
+byte-mismatched rows remain explicit blockers.
+
 ## Evidence model
 
 Events carry monotonically increasing source ordinals and emulated timing. GX command and draw
@@ -81,6 +113,10 @@ invalid.
 Use these records, guest state, and deterministic replay as primary evidence. Screenshots are useful
 for orientation and visual confirmation, but are not authoritative evidence for exact timing,
 values, or render ownership.
+
+Dolphin's existing GDB remote stub remains available for exploratory interactive stepping. GDB
+memory/register writes are outside the Lua mutation ledger, so a run controlled through GDB must not
+be claimed as authoritative evidence.
 
 The pipe transport and effective-pipeline capture currently target Windows and Direct3D 11. Other
 backends still receive the CPU, memory, GX, EFB-copy, and frame hooks, but do not emit D3D11

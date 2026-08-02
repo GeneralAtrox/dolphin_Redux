@@ -2,6 +2,7 @@
 #include "Core/SoAL/LuaDebuggerController.h"
 
 #include "Common/Event.h"
+#include "Core/Config/MainSettings.h"
 #include "Core/Core.h"
 #include "Core/HW/CPU.h"
 #include "Core/PowerPC/BreakPoints.h"
@@ -109,8 +110,14 @@ bool LuaDebuggerController::StepFrame(std::chrono::milliseconds timeout, std::st
 
 bool LuaDebuggerController::AddBreakpoint(u32 address, std::string* error)
 {
+  if (!Config::IsDebuggingEnabled())
+  {
+    SetError(error, "JIT breakpoints require DebugModeEnabled before boot");
+    return false;
+  }
   const Core::CPUThreadGuard guard(m_system);
   auto& breakpoints = m_system.GetPowerPC().GetBreakPoints();
+  breakpoints.EnableBreaking(true);
   breakpoints.Add(address);
   if (!breakpoints.IsAddressBreakPoint(address))
   {

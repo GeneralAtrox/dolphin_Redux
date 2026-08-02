@@ -28,6 +28,28 @@ void BranchWatch::Clear(const CPUThreadGuard&)
   m_blacklist_size = 0;
 }
 
+std::vector<BranchWatchSnapshotEntry> BranchWatch::Snapshot(const CPUThreadGuard&) const
+{
+  std::vector<BranchWatchSnapshotEntry> result;
+  result.reserve(GetCollectionSize());
+  const auto append = [&](const Collection& collection, bool is_virtual, bool condition) {
+    for (const auto& [key, value] : collection)
+    {
+      result.push_back({.origin_addr = key.origin_addr,
+                        .destin_addr = key.destin_addr,
+                        .original_inst = key.original_inst.hex,
+                        .total_hits = value.total_hits,
+                        .is_virtual = is_virtual,
+                        .condition = condition});
+    }
+  };
+  append(m_collection_vt, true, true);
+  append(m_collection_pt, false, true);
+  append(m_collection_vf, true, false);
+  append(m_collection_pf, false, false);
+  return result;
+}
+
 // This is a bitfield aggregate of metadata required to reconstruct a BranchWatch's Collections and
 // Selection from a text file (a snapshot). For maximum forward compatibility, should that ever be
 // required, the StorageType is an unsigned long long instead of something more reasonable like an

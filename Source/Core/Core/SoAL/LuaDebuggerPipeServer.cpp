@@ -7,14 +7,27 @@
 #include <charconv>
 #include <cstdlib>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 #include <fmt/format.h>
+#include <mbedtls/sha256.h>
 
+#include "Common/Config/Config.h"
 #include "Common/CommonTypes.h"
 #include "Common/FileUtil.h"
+#include "Common/SymbolDB.h"
+#include "Core/Config/MainSettings.h"
+#include "Core/Core.h"
+#include "Core/CoreTiming.h"
+#include "Core/Debugger/BranchWatch.h"
+#include "Core/PowerPC/JitCommon/JitCache.h"
+#include "Core/PowerPC/JitInterface.h"
+#include "Core/PowerPC/PPCSymbolDB.h"
+#include "Core/PowerPC/PowerPC.h"
 #include "Core/SoAL/LuaDebuggerService.h"
 #include "Core/System.h"
 
@@ -39,6 +52,15 @@ std::string EscapeJson(std::string_view value)
     else if (c == '\n')
       result += "\\n";
   }
+  return result;
+}
+
+std::string Sha256Hex(const std::array<u8, 32>& digest)
+{
+  std::string result;
+  result.reserve(64);
+  for (const u8 byte : digest)
+    result += fmt::format("{:02x}", byte);
   return result;
 }
 
@@ -288,6 +310,223 @@ std::string LuaDebuggerPipeServer::HandleCommand(const std::string& command)
         "\"error\":\"{}\"}}",
         ok, add ? "add" : "remove", address ? fmt::format("{:08x}", *address) : "",
         EscapeJson(error));
+  }
+  if (normalized == "jit profile reset")
+  {
+    if (!Config::Get(Config::MAIN_DEBUG_JIT_ENABLE_PROFILING))
+    {
+      return "{\"ok\":false,\"action\":\"jit_profile_reset\","
+             "\"error\":\"JitEnableProfiling was not enabled before boot\"}";
+    }
+    Core::System& system = Core::System::GetInstance();
+    const Core::CPUThreadGuard guard(system);
+    system.GetJitInterface().WipeBlockProfilingData(guard);
+    return fmt::format(
+        "{{\"ok\":true,\"action\":\"jit_profile_reset\",\"emulated_ticks\":{},"
+        "\"error\":\"\"}}",
+        system.GetCoreTiming().GetTicks());
+  }
+  if (normalized == "jit profile snapshot")
+  {
+    struct ExecutedBlock
+    {
+      u32 address = 0;
+      u32 physical_address = 0;
+      u32 size = 0;
+      u32 feature_flags = 0;
+      u64 run_count = 0;
+      u64 cycles_spent = 0;
+      std::string symbol;
+      std::vector<u32> instruction_addresses;
+      std::string code_bytes;
+      std::string code_sha256;
+      bool code_identity_available = false;
+    };
+
+    Core::System& system = Core::System::GetInstance();
+    std::vector<ExecutedBlock> blocks;
+    size_t total_blocks = 0;
+    size_t profiled_blocks = 0;
+    size_t unprofiled_blocks = 0;
+    size_t code_identity_blocks = 0;
+    u64 snapshot_ticks = 0;
+    {
+      const Core::CPUThreadGuard guard(system);
+      snapshot_ticks = system.GetCoreTiming().GetTicks();
+      system.GetJitInterface().RunOnBlocks(guard, [&](const JitBlock& block) {
+        ++total_blocks;
+        if (!block.profile_data)
+        {
+          ++unprofiled_blocks;
+          return;
+        }
+        ++profiled_blocks;
+        if (block.profile_data->run_count == 0)
+          return;
+        const Common::Symbol* symbol =
+            system.GetPPCSymbolDB().GetSymbolFromAddr(block.effectiveAddress);
+        ExecutedBlock executed{
+            .address = block.effectiveAddress,
+            .physical_address = block.physicalAddress,
+            .size = block.originalSize * static_cast<u32>(sizeof(UGeckoInstruction)),
+            .feature_flags = static_cast<u32>(block.feature_flags),
+            .run_count = static_cast<u64>(block.profile_data->run_count),
+            .cycles_spent = block.profile_data->cycles_spent,
+            .symbol = symbol ? symbol->name : std::string{},
+        };
+        if (block.originalSize != 0 && block.original_buffer.size() == block.originalSize)
+        {
+          std::vector<u8> code_bytes;
+          code_bytes.reserve(block.original_buffer.size() * sizeof(UGeckoInstruction));
+          executed.instruction_addresses.reserve(block.original_buffer.size());
+          executed.code_bytes.reserve(block.original_buffer.size() * 8);
+          for (const auto& [address, instruction] : block.original_buffer)
+          {
+            executed.instruction_addresses.push_back(address);
+            executed.code_bytes += fmt::format("{:08x}", instruction.hex);
+            code_bytes.push_back(static_cast<u8>(instruction.hex >> 24));
+            code_bytes.push_back(static_cast<u8>(instruction.hex >> 16));
+            code_bytes.push_back(static_cast<u8>(instruction.hex >> 8));
+            code_bytes.push_back(static_cast<u8>(instruction.hex));
+          }
+          std::array<u8, 32> digest{};
+          if (mbedtls_sha256_ret(code_bytes.data(), code_bytes.size(), digest.data(), 0) == 0)
+          {
+            executed.code_sha256 = Sha256Hex(digest);
+            executed.code_identity_available = true;
+            ++code_identity_blocks;
+          }
+        }
+        blocks.push_back(std::move(executed));
+      });
+    }
+    std::ranges::sort(blocks, [](const ExecutedBlock& left, const ExecutedBlock& right) {
+      return std::tie(left.address, left.physical_address, left.feature_flags) <
+             std::tie(right.address, right.physical_address, right.feature_flags);
+    });
+    std::string block_json = "[";
+    for (size_t index = 0; index < blocks.size(); ++index)
+    {
+      const ExecutedBlock& block = blocks[index];
+      if (index != 0)
+        block_json += ',';
+      std::string instruction_addresses = "[";
+      for (size_t instruction_index = 0;
+           instruction_index < block.instruction_addresses.size(); ++instruction_index)
+      {
+        if (instruction_index != 0)
+          instruction_addresses += ',';
+        instruction_addresses +=
+            fmt::format("\"{:08x}\"", block.instruction_addresses[instruction_index]);
+      }
+      instruction_addresses += ']';
+      block_json += fmt::format(
+          "{{\"ppc_address\":\"{:08x}\",\"physical_address\":\"{:08x}\","
+          "\"ppc_size\":{},\"feature_flags\":{},\"run_count\":{},"
+          "\"cycles_spent\":{},\"symbol\":\"{}\","
+          "\"code_identity_available\":{},\"instruction_addresses\":{},"
+          "\"code_bytes\":\"{}\",\"code_sha256\":\"{}\"}}",
+          block.address, block.physical_address, block.size, block.feature_flags,
+          block.run_count, block.cycles_spent, EscapeJson(block.symbol),
+          block.code_identity_available ? "true" : "false", instruction_addresses,
+          block.code_bytes, block.code_sha256);
+    }
+    block_json += ']';
+    return fmt::format(
+        "{{\"ok\":true,\"action\":\"jit_profile_snapshot\","
+        "\"schema\":\"dolphin-redux.jit-profile.v2\",\"emulated_ticks\":{},"
+        "\"profiling_enabled\":{},\"total_blocks\":{},\"profiled_blocks\":{},"
+        "\"unprofiled_blocks\":{},\"executed_blocks\":{},"
+        "\"code_identity_blocks\":{},\"code_identity_complete\":{},\"blocks\":{}}}",
+        snapshot_ticks,
+        Config::Get(Config::MAIN_DEBUG_JIT_ENABLE_PROFILING) ? "true" : "false",
+        total_blocks, profiled_blocks, unprofiled_blocks, blocks.size(), code_identity_blocks,
+        code_identity_blocks == blocks.size() ? "true" : "false", block_json);
+  }
+  if (normalized == "branch profile reset")
+  {
+    Core::System& system = Core::System::GetInstance();
+    u64 reset_ticks = 0;
+    u32 reset_pc = 0;
+    {
+      const Core::CPUThreadGuard guard(system);
+      Core::BranchWatch& branch_watch = system.GetPowerPC().GetBranchWatch();
+      branch_watch.Clear(guard);
+      if (!branch_watch.GetRecordingActive())
+        branch_watch.SetRecordingActive(guard, true);
+      reset_ticks = system.GetCoreTiming().GetTicks();
+      reset_pc = system.GetPPCState().pc;
+    }
+    return fmt::format(
+        "{{\"ok\":true,\"action\":\"branch_profile_reset\","
+        "\"schema\":\"dolphin-redux.branch-profile-boundary.v1\","
+        "\"emulated_ticks\":{},\"pc\":\"{:08x}\",\"recording_active\":true}}",
+        reset_ticks, reset_pc);
+  }
+  if (normalized == "branch profile snapshot")
+  {
+    Core::System& system = Core::System::GetInstance();
+    std::vector<Core::BranchWatchSnapshotEntry> entries;
+    u64 snapshot_ticks = 0;
+    bool recording_active = false;
+    {
+      const Core::CPUThreadGuard guard(system);
+      const Core::BranchWatch& branch_watch = system.GetPowerPC().GetBranchWatch();
+      snapshot_ticks = system.GetCoreTiming().GetTicks();
+      recording_active = branch_watch.GetRecordingActive();
+      entries = branch_watch.Snapshot(guard);
+    }
+    std::ranges::sort(entries, [](const auto& left, const auto& right) {
+      return std::tie(left.origin_addr, left.destin_addr, left.original_inst, left.is_virtual,
+                      left.condition) <
+             std::tie(right.origin_addr, right.destin_addr, right.original_inst,
+                      right.is_virtual, right.condition);
+    });
+    u64 total_hits = 0;
+    size_t taken_edges = 0;
+    size_t not_taken_edges = 0;
+    std::string entries_json = "[";
+    for (size_t index = 0; index < entries.size(); ++index)
+    {
+      const Core::BranchWatchSnapshotEntry& entry = entries[index];
+      total_hits += entry.total_hits;
+      if (entry.condition)
+        ++taken_edges;
+      else
+        ++not_taken_edges;
+      if (index != 0)
+        entries_json += ',';
+      entries_json += fmt::format(
+          "{{\"origin\":\"{:08x}\",\"destination\":\"{:08x}\","
+          "\"instruction\":\"{:08x}\",\"hits\":{},\"taken\":{},"
+          "\"address_space\":\"{}\"}}",
+          entry.origin_addr, entry.destin_addr, entry.original_inst, entry.total_hits,
+          entry.condition ? "true" : "false", entry.is_virtual ? "virtual" : "physical");
+    }
+    entries_json += ']';
+    return fmt::format(
+        "{{\"ok\":true,\"action\":\"branch_profile_snapshot\","
+        "\"schema\":\"dolphin-redux.branch-profile.v1\",\"emulated_ticks\":{},"
+        "\"recording_active\":{},\"distinct_edges\":{},\"taken_edges\":{},"
+        "\"not_taken_edges\":{},\"total_hits\":{},\"edges\":{}}}",
+        snapshot_ticks, recording_active ? "true" : "false", entries.size(), taken_edges,
+        not_taken_edges, total_hits, entries_json);
+  }
+  if (normalized == "branch profile stop")
+  {
+    Core::System& system = Core::System::GetInstance();
+    u64 stop_ticks = 0;
+    {
+      const Core::CPUThreadGuard guard(system);
+      Core::BranchWatch& branch_watch = system.GetPowerPC().GetBranchWatch();
+      if (branch_watch.GetRecordingActive())
+        branch_watch.SetRecordingActive(guard, false);
+      stop_ticks = system.GetCoreTiming().GetTicks();
+    }
+    return fmt::format(
+        "{{\"ok\":true,\"action\":\"branch_profile_stop\",\"emulated_ticks\":{},"
+        "\"recording_active\":false}}",
+        stop_ticks);
   }
   return "{\"ok\":false,\"error\":\"unknown command\"}";
 }

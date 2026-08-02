@@ -31,7 +31,9 @@ It also provides:
 - read-only operation by default, with explicit mutation opt-in that marks the session as
   non-authoritative research;
 - deterministic emulated timestamps and source ordinals so evidence from different emulator
-  subsystems can be joined without relying on host time or screenshots; and
+  subsystems can be joined without relying on host time or screenshots;
+- bounded JIT block and dynamic branch profiles with original PowerPC byte identities, plus strict
+  joins to a Ghidra function catalog; and
 - Skies of Arcadia Legends title-state and fade-word snapshots at render checkpoints.
 
 When no Lua session is active, the added observation paths remain inactive. The named-pipe control
