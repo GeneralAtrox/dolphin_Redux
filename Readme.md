@@ -1,237 +1,307 @@
-# Dolphin Redux
+Below is the complete Dolphin Redux addition set, excluding all standard Dolphin emulation functionality.
 
-[Homepage](https://dolphin-emu.org/) | [Project Site](https://github.com/dolphin-emu/dolphin) | [Buildbot](https://dolphin.ci/) | [Forums](https://forums.dolphin-emu.org/) | [Wiki](https://wiki.dolphin-emu.org/) | [GitHub Wiki](https://github.com/dolphin-emu/dolphin/wiki) | [Issue Tracker](https://bugs.dolphin-emu.org/projects/emulator/issues) | [Coding Style](https://github.com/dolphin-emu/dolphin/blob/master/Contributing.md) | [Transifex Page](https://app.transifex.com/dolphinemu/dolphin-emu/dashboard/) | [Analytics](https://mon.dolphin-emu.org/)
+## Embedded Lua debugger
 
-Dolphin Redux is a personal fork of the Dolphin GameCube and Wii emulator. It retains Dolphin's
-normal emulation features and adds an embedded Lua debugger for data-backed game reverse
-engineering.
+- Dynamically loads a specified 64-bit Lua 5.4 runtime.
+- Loads observer scripts without recompiling Dolphin.
+- Reloads scripts while the game is running.
+- Provides a live Lua console.
+- Executes all callbacks on one ordered script thread.
+- Supports structured JSON output and a separate error stream.
+- Identifies the exact Lua runtime and script with SHA-256 hashes.
 
-The goal is to answer questions that screenshots and ordinary emulator logs cannot: which guest
-instruction changed a value, which fade value was active for a draw, what complete GX command and
-state produced it, which EFB/XFB resource received the result, and which pixels were ultimately
-presented.
+## Runtime callbacks
 
-## What Dolphin Redux adds
+Lua scripts can register and unregister callbacks for:
 
-| Standard Dolphin | Dolphin Redux |
-| --- | --- |
-| Runs and visually debugs GameCube/Wii software | Exposes execution as ordered, machine-readable events |
-| Provides built-in debugger controls | Adds hot-loadable Lua 5.4 observer scripts and a live console |
-| Can inspect memory manually | Calls scripts on exact memory reads/writes with address, value, size, PC, and LR, including JIT execution |
-| Executes the GX command stream | Exports complete GX command/vertex payloads and canonical CP, BP, and XF draw state |
-| Renders through the selected graphics backend | Captures the effective Direct3D 11 shaders, constants, textures, samplers, framebuffer, and draw parameters |
-| Displays the final frame | Records GX draws, EFB/XFB copies, and presents in one ordered evidence stream; copy and present events share the guest-XFB resource identity and include a canonical pixel SHA-256 when readback is available |
+- PowerPC instruction execution.
+- Video-frame completion.
+- Memory reads over selected address ranges.
+- Memory writes over selected address ranges.
+- Complete GX commands.
+- GX draw submissions.
+- EFB copies, including XFB copies.
+- Effective Direct3D 11 pipeline submissions.
+- Presented frames.
 
-It also provides:
+## CPU and memory evidence
 
-- callbacks for instructions, frames, memory reads/writes, GX commands, GX draws, EFB copies,
-  effective pipelines, and presents;
-- pause, resume, instruction-step, frame-step, scripted breakpoints, script reload, and structured
-  output through a local named pipe;
-- read-only operation by default, with explicit mutation opt-in that marks the session as
-  non-authoritative research;
-- deterministic emulated timestamps and source ordinals so evidence from different emulator
-  subsystems can be joined without relying on host time or screenshots;
-- bounded JIT block and dynamic branch profiles with original PowerPC byte identities, plus strict
-  joins to a Ghidra function catalog; and
-- Skies of Arcadia Legends title-state and fade-word snapshots at render checkpoints.
+Instruction events provide:
 
-When no Lua session is active, the added observation paths remain inactive. The named-pipe control
-surface currently targets Windows, and effective-pipeline capture currently targets Direct3D 11.
+- Exact PowerPC address.
+- Program counter.
+- Link register.
+- Emulated timestamp.
+- Global source ordinal.
 
-See [Dolphin Redux Lua Debugger](docs/DolphinReduxLuaDebugger.md) for setup, commands, callbacks,
-examples, and evidence boundaries.
+Memory events provide:
 
-Dolphin is licensed under the GNU General Public License, version 2 or later (GPLv2+).
+- Address.
+- Value.
+- Access size.
+- Read or write classification.
+- Exact writer/reader PC.
+- Exact LR.
+- Interpreter and JIT-path observation.
 
-Please read the [FAQ](https://dolphin-emu.org/docs/faq/) before using Dolphin.
+Lua can read:
 
-## System Requirements
+- Unsigned 8-, 16- and 32-bit memory.
+- Signed 8-, 16- and 32-bit memory.
+- 32- and 64-bit floating-point memory.
+- Registers `r0`–`r31`.
+- `PC`, `NPC`, `LR`, `CTR`, `CR`, `XER`, `MSR`, and `FPSCR`.
+- Symbol addresses from Dolphin’s loaded symbol database.
 
-### Desktop
+## GX command and draw evidence
 
-* OS
-    * Windows (10 1903 or higher).
-    * Linux.
-    * macOS (11.0 Big Sur or higher).
-    * Unix-like systems other than Linux are not officially supported but might work.
-* Processor
-    * A CPU with SSE2 support.
-    * A modern CPU (3 GHz and Dual Core, not older than 2008) is highly recommended.
-* Graphics
-    * A reasonably modern graphics card (Direct3D 11.1 / OpenGL 3.3).
-    * A graphics card that supports Direct3D 11.1 / OpenGL 4.4 is recommended.
+GX command records include:
 
-### Android
+- Global command ordinal.
+- Complete lossless command payload, up to the bounded payload limit.
+- Leading command bytes in directly accessible form.
+- Deterministic emulated timing.
 
-* OS
-    * Android (7.0 Nougat or higher).
-* Processor
-    * A processor with support for 64-bit applications (either ARMv8 or x86-64).
-* Graphics
-    * A graphics processor that supports OpenGL ES 3.0 or higher. Performance varies heavily with [driver quality](https://dolphin-emu.org/blog/2013/09/26/dolphin-emulator-and-opengl-drivers-hall-fameshame/).
-    * A graphics processor that supports standard desktop OpenGL features is recommended for best performance.
+GX draw records include:
 
-Dolphin can only be installed on devices that satisfy the above requirements. Attempting to install on an unsupported device will fail and display an error message.
+- Command and draw ordinals.
+- Draw ordinal within the current frame.
+- Primitive type.
+- VAT selection.
+- Vertex size.
+- Vertex count.
+- Complete vertex/command payload.
+- Canonical active CP state.
+- Canonical active BP state.
+- Relevant XF state.
+- SHA-256 identity of the complete GX state payload.
 
-## Building
+## Effective graphics-pipeline evidence
 
-You may find building instructions on the appropriate wiki page for your operating system:
+For Direct3D 11 draws, it records:
 
-* [Windows](https://github.com/dolphin-emu/dolphin/wiki/Building-for-Windows)
-* [Linux](https://github.com/dolphin-emu/dolphin/wiki/Building-for-Linux)
-* [macOS](https://github.com/dolphin-emu/dolphin/wiki/Building-for-macOS)
-* [Android](#android-specific-instructions) <!-- TODO: Create a "Building for Android" wiki page and link it here -->
-* [OpenBSD](https://github.com/dolphin-emu/dolphin/wiki/Building-for-OpenBSD) (unsupported)
+- Indexed or non-indexed draw type.
+- Draw base.
+- Draw count.
+- Base vertex.
+- Effective backend pipeline configuration.
+- Generated shader source.
+- Compiled shader bytecode.
+- Vertex and pixel constant-buffer bytes.
+- Bound texture descriptors.
+- Bound sampler state.
+- Bound framebuffer information.
+- Resource bindings used by the draw.
+- Separate SHA-256 identities for pipeline definitions and per-draw bindings.
+- Deduplication of repeated pipeline definitions while retaining their identities.
 
-Before building, make sure to pull all submodules:
+## EFB/XFB copy evidence
 
-```sh
-git submodule update --init --recursive
-```
+Copy records include:
 
-### Android-specific instructions
+- GX/frame ordering.
+- Destination guest address.
+- Destination stride and dimensions.
+- Source EFB rectangle.
+- Vertical filter coefficients.
+- Gamma configuration.
+- Y-scale.
+- Copy flags.
+- Color or depth classification.
+- VRAM, RAM and XFB destination classification.
+- Texture-cache resource ID.
+- Resource hash and base hash.
+- Resource content ordinal.
+- Optional canonical EFB-source and copy-result pixel hashes.
+- Captured pixel dimensions, stride and format.
 
-These instructions assume familiarity with Android development. If you do not have an
-Android dev environment set up, see [AndroidSetup.md](AndroidSetup.md).
+## Presented-frame evidence
 
-If using Android Studio, import the Gradle project located in `./Source/Android`.
+Present records include:
 
-Android apps are compiled using a build system called Gradle. Dolphin's native component,
-however, is compiled using CMake. The Gradle script will attempt to run a CMake build
-automatically while building the Java code.
+- Presentation ordinal.
+- Guest frame number.
+- Video-frame ordinal.
+- Selected XFB address, width, height and stride.
+- Exact texture-cache resource identity.
+- Resource content ordinal.
+- Duplicate-presentation state.
+- Presentation source.
+- Canonical RGBA8 pixel SHA-256 when backend readback is available.
+- Pixel dimensions, stride and format.
 
-## Uninstalling
+This links:
 
-On Windows, simply remove the extracted directory, unless it was installed with the NSIS installer,
-in which case you can uninstall Dolphin like any other Windows application.
+`GX draw → EFB/XFB copy → resource identity → presented frame`
 
-Linux users can run `cat install_manifest.txt | xargs -d '\n' rm` as root from the build directory
-to uninstall Dolphin from their system.
+## Deterministic ordering
 
-macOS users can simply delete Dolphin.app to uninstall it.
+- Uses emulated ticks rather than host wall-clock time.
+- Assigns a global source ordinal across CPU and graphics producers.
+- Assigns independent frame, command and draw ordinals.
+- Preserves repeated presentation frames.
+- Captures guest state at the producing checkpoint, avoiding later-state contamination.
 
-Additionally, you'll want to remove the global user directory if you don't plan on reinstalling Dolphin.
+## Skies of Arcadia render checkpoints
 
-## Command Line Usage
+At relevant callbacks it additionally records:
 
-```
-Usage: Dolphin.exe [options]... [FILE]...
+- Title-state value at `0x80311ae0`.
+- Six recovered fade words from `0x80347504` through `0x80347518`.
+- Whether those addresses were valid at the checkpoint.
 
-Options:
-  --version             show program's version number and exit
-  -h, --help            show this help message and exit
-  -u USER, --user=USER  User folder path
-  -m MOVIE, --movie=MOVIE
-                        Play a movie file
-  -e <file>, --exec=<file>
-                        Load the specified file
-  -n <16-character ASCII title ID>, --nand_title=<16-character ASCII title ID>
-                        Launch a NAND title
-  -C <System>.<Section>.<Key>=<Value>, --config=<System>.<Section>.<Key>=<Value>
-                        Set a configuration option
-  -s <file>, --save_state=<file>
-                        Load the initial save state
-  -d, --debugger        Show the debugger pane and additional View menu options
-  -l, --logger          Open the logger
-  -b, --batch           Run Dolphin without the user interface (Requires
-                        --exec or --nand-title)
-  -c, --confirm         Set Confirm on Stop
-  -v VIDEO_BACKEND, --video_backend=VIDEO_BACKEND
-                        Specify a video backend
-  -a AUDIO_EMULATION, --audio_emulation=AUDIO_EMULATION
-                        Choose audio emulation from [HLE|LLE]
-```
+This provides the fade value active when each draw or presentation event was produced.
 
-Available DSP emulation engines are HLE (High Level Emulation) and
-LLE (Low Level Emulation). HLE is faster but less accurate whereas
-LLE is slower but close to perfect. Note that LLE has two submodes (Interpreter and Recompiler)
-but they cannot be selected from the command line.
+## Execution control
 
-Available video backends are "D3D" and "D3D12" (they are only available on Windows), "OGL", and "Vulkan".
-There's also "Null", which will not render anything, and
-"Software Renderer", which uses the CPU for rendering and
-is intended for debugging purposes only.
+The control interface supports:
 
-## DolphinTool Usage
-```
-usage: dolphin-tool COMMAND -h
+- Pause.
+- Resume.
+- Single PowerPC instruction step.
+- Single video-frame step.
+- Add breakpoint.
+- Remove breakpoint.
+- List breakpoints.
+- Clear breakpoints.
+- Fail-closed rejection when JIT breakpoint prerequisites were not enabled before boot.
 
-commands supported: [convert, verify, header, extract]
-```
+## JIT execution profiling
 
-```
-Usage: convert [options]... [FILE]...
+A bounded profiling run can:
 
-Options:
-  -h, --help            show this help message and exit
-  -u USER, --user=USER  User folder path, required for temporary processing
-                        files.Will be automatically created if this option is
-                        not set.
-  -i FILE, --input=FILE
-                        Path to disc image FILE.
-  -o FILE, --output=FILE
-                        Path to the destination FILE.
-  -f FORMAT, --format=FORMAT
-                        Container format to use. Default is RVZ. [iso|gcz|wia|rvz]
-  -s, --scrub           Scrub junk data as part of conversion.
-  -b BLOCK_SIZE, --block_size=BLOCK_SIZE
-                        Block size for GCZ/WIA/RVZ formats, as an integer.
-                        Suggested value for RVZ: 131072 (128 KiB)
-  -c COMPRESSION, --compression=COMPRESSION
-                        Compression method to use when converting to WIA/RVZ.
-                        Suggested value for RVZ: zstd [none|zstd|bzip|lzma|lzma2]
-  -l COMPRESSION_LEVEL, --compression_level=COMPRESSION_LEVEL
-                        Level of compression for the selected method. Ignored
-                        if 'none'. Suggested value for zstd: 5
-```
+- Clear all previous JIT execution counters at a scene boundary.
+- Export only blocks whose run count is greater than zero.
+- Report total, profiled, unprofiled and executed block counts.
+- Record effective and physical block addresses.
+- Record block size and feature flags.
+- Record run count and cycles spent.
+- Record Dolphin’s associated symbol, if available.
+- Preserve every original PowerPC instruction address.
+- Preserve the exact original instruction bytes.
+- Calculate a SHA-256 identity for every executed block.
+- Explicitly report blocks lacking complete byte identity.
 
-```
-Usage: verify [options]...
+## Dynamic branch profiling
 
-Options:
-  -h, --help            show this help message and exit
-  -u USER, --user=USER  User folder path, required for temporary processing
-                        files.Will be automatically created if this option is
-                        not set.
-  -i FILE, --input=FILE
-                        Path to disc image FILE.
-  -a ALGORITHM, --algorithm=ALGORITHM
-                        Optional. Compute and print the digest using the
-                        selected algorithm, then exit. [crc32|md5|sha1|rchash]
-```
+A bounded run can:
 
-```
-Usage: header [options]...
+- Clear previous branch records.
+- Start recording at an exact scene boundary.
+- Snapshot the profile at an endpoint.
+- Stop recording.
+- Record branch source and actual destination.
+- Record the original PowerPC instruction word.
+- Record taken and not-taken outcomes.
+- Record hit counts.
+- Distinguish virtual and physical address observations.
+- Provide deterministic boundary PC and emulated timestamp.
 
-Options:
-  -h, --help            show this help message and exit
-  -i FILE, --input=FILE
-                        Path to disc image FILE.
-  -b, --block_size      Optional. Print the block size of GCZ/WIA/RVZ formats,
-then exit.
-  -c, --compression     Optional. Print the compression method of GCZ/WIA/RVZ
-                        formats, then exit.
-  -l, --compression_level
-                        Optional. Print the level of compression for WIA/RVZ
-                        formats, then exit.
-```
+## Ghidra catalog exporter
 
-```
-Usage: extract [options]...
+The included Ghidra script exports:
 
-Options:
-  -h, --help            show this help message and exit
-  -i FILE, --input=FILE
-                        Path to disc image FILE.
-  -o FOLDER, --output=FOLDER
-                        Path to the destination FOLDER.
-  -p PARTITION, --partition=PARTITION
-                        Which specific partition you want to extract.
-  -s SINGLE, --single=SINGLE
-                        Which specific file/directory you want to extract.
-  -l, --list            List all files in volume/partition. Will print the
-                        directory/file specified with --single if defined.
-  -q, --quiet           Mute all messages except for errors.
-  -g, --gameonly        Only extracts the DATA partition.
-```
+- Function entry address.
+- Ghidra function name.
+- Function size.
+- Every discontiguous body range.
+- Exact bytes for every body range.
+- SHA-256 for every body range.
+- Thunk classification.
+- Known callers and callees.
+- Referenced strings.
+- Optional minimum and maximum address filtering.
+
+## Ghidra profile joins
+
+The JIT join tool:
+
+- Joins executed blocks to one or more Ghidra functions.
+- Handles blocks containing instructions from several functions.
+- Verifies runtime instructions against Ghidra bytes.
+- Detects stale or mismatched catalogs.
+- Reports unresolved blocks explicitly.
+- Distinguishes identity-verified, address-only and incomplete-catalog results.
+- Hashes all profile and catalog inputs.
+
+The branch join tool:
+
+- Verifies each executed branch instruction against Ghidra.
+- Decodes direct, conditional, LR and CTR branches.
+- Produces exact dynamic call edges.
+- Identifies confirmed function-entry edges.
+- Identifies LR-transfer edges.
+- Preserves taken and not-taken evidence.
+- Refuses mismatched or unresolved evidence by default.
+- Hashes all input artifacts.
+
+## Read-only and mutation modes
+
+By default:
+
+- Memory and registers are read-only.
+- The session is marked `authoritative_read_only`.
+- Writes fail closed.
+
+After explicit mutation acknowledgement, Lua can:
+
+- Write unsigned 8-, 16- and 32-bit memory.
+- Write `r0`–`r31`, `PC`, `NPC`, `LR`, `CTR`, and `CR`.
+
+Every accepted mutation records:
+
+- Mutation reason.
+- Action sequence.
+- Target address or register.
+- Value/payload SHA-256.
+- Mutation classification.
+
+Mutation permanently marks that session non-authoritative.
+
+## Evidence provenance
+
+Session status records:
+
+- Script filename.
+- Script SHA-256.
+- Lua runtime SHA-256.
+- Evidence state.
+- Authoritative eligibility.
+- Mutation status.
+- Ordered action ledger.
+- Script reloads.
+- Console evaluations.
+- Memory and register writes.
+- Runtime failures.
+
+Reloading a script or using the console changes the run to exploratory. Runtime or queue failures invalidate an otherwise authoritative session.
+
+## Sandboxing and bounds
+
+Lua execution is restricted by:
+
+- 16 MiB default Lua allocation limit.
+- One-million-instruction default callback budget.
+- Bounded output record count.
+- Bounded GX payload storage.
+- Removal of `io`, `os`, `package`, `debug`, `require`, `load`, `loadfile`, `dofile`, and `collectgarbage`.
+- A single serialized callback thread.
+- Fail-closed queue and runtime-error handling.
+
+## Agent control interface
+
+The Windows named-pipe client provides:
+
+- Configurable private pipe names.
+- Connection and response timeouts.
+- Bounded response sizes.
+- Strict JSON depth and node-count validation.
+- Optional binding to the exact server:
+  - process ID;
+  - process creation time;
+  - executable path;
+  - Windows user SID.
+- Verification before transmitting request bytes.
+- Rejection of partial identity specifications.
+- Machine-readable command responses.
+
